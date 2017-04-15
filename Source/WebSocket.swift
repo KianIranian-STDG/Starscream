@@ -94,6 +94,7 @@ open class WebSocket : NSObject, StreamDelegate {
     let OpCodeMask: UInt8       = 0x0F
     let RSVMask: UInt8          = 0x70
     let MaskMask: UInt8         = 0x80
+    let NoMaskMask: UInt8       = 0x7F
     let PayloadLenMask: UInt8   = 0x7F
     let MaxFrameSize: Int       = 32
     let httpSwitchProtocolCode  = 101
@@ -135,7 +136,7 @@ open class WebSocket : NSObject, StreamDelegate {
     public var isConnected: Bool {
         return connected
     }
-    
+    public var shouldMask = true
     public var currentURL: URL { return url }
 
     // MARK: - Private
@@ -186,7 +187,9 @@ open class WebSocket : NSObject, StreamDelegate {
      Connect to the WebSocket server on a background thread.
      */
     open func connect() {
+        print("trying to stablish a connection......")
         guard !isConnecting else { return }
+        shouldMask = true       //at the initial phase before securing connection, mask should be on
         didDisconnect = false
         isConnecting = true
         createHTTPRequest()
@@ -510,6 +513,7 @@ open class WebSocket : NSObject, StreamDelegate {
      */
     private func processTCPHandshake(_ buffer: UnsafePointer<UInt8>, bufferLen: Int) {
         let code = processHTTP(buffer, bufferLen: bufferLen)
+        print ("TCP handshake code: \(code)")
         switch code {
         case 0:
             break
@@ -879,14 +883,21 @@ open class WebSocket : NSObject, StreamDelegate {
                 WebSocket.writeUint64(buffer, offset: offset, value: UInt64(dataLength))
                 offset += MemoryLayout<UInt64>.size
             }
-            buffer[1] |= s.MaskMask
-            let maskKey = UnsafeMutablePointer<UInt8>(buffer + offset)
-            _ = SecRandomCopyBytes(kSecRandomDefault, Int(MemoryLayout<UInt32>.size), maskKey)
-            offset += MemoryLayout<UInt32>.size
-            
-            for i in 0..<dataLength {
-                buffer[offset] = data[i] ^ maskKey[i % MemoryLayout<UInt32>.size]
-                offset += 1
+            if s.shouldMask {
+                buffer[1] |= s.MaskMask
+                let maskKey = UnsafeMutablePointer<UInt8>(buffer + offset)
+                _ = SecRandomCopyBytes(kSecRandomDefault, Int(MemoryLayout<UInt32>.size), maskKey)
+                offset += MemoryLayout<UInt32>.size
+                for i in 0..<dataLength {
+                    buffer[offset] = data[i] ^ maskKey[i % MemoryLayout<UInt32>.size]
+                    offset += 1
+                }
+            } else {
+                buffer[1] &= s.NoMaskMask
+                for i in 0..<dataLength {
+                    buffer[offset] = data[i]
+                    offset += 1
+                }
             }
             var total = 0
             while !sOperation.isCancelled {
